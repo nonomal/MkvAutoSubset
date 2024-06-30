@@ -10,6 +10,7 @@ import (
 
 func newProcess(stdin io.Reader, stdout, stderr io.Writer, dir, prog string, args ...string) (p *os.Process, err error) {
 	cmd := exec.Command(prog, args...)
+
 	if dir != "" {
 		cmd.Dir = dir
 	}

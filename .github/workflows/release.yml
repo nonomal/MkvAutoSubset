@@ -16,13 +16,13 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v2
         with:
-          go-version: 1.18
+          go-version: '1.20'
 
       - name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@v2
+        uses: goreleaser/goreleaser-action@v3
         with:
           distribution: goreleaser
-          version: latest
+          version: v1.18.2
           args: release --rm-dist -f ../.github/goreleaser.yml
           workdir: mkvtool
         env:

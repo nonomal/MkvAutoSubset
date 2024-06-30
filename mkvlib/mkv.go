@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -30,8 +31,9 @@ type mkvInfo struct {
 		Type       string `json:"type"`
 		Codec      string `json:"codec"`
 		Properties struct {
-			Language  string `json:"language"`
-			TrackName string `json:"track_name"`
+			Language     string `json:"language"`
+			TrackName    string `json:"track_name"`
+			DefaultTrack bool   `json:"default_track"`
 		} `json:"properties"`
 	}
 }
@@ -77,7 +79,11 @@ func (self *mkvProcessor) DumpMKV(file, output string, subset bool, lcb logCallb
 	}
 	for _, _item := range obj.Tracks {
 		if _item.Type == "subtitles" {
-			s := fmt.Sprintf(`%d_%s_%s`, _item.ID, _item.Properties.Language, _item.Properties.TrackName)
+			s := ""
+			if _item.Properties.DefaultTrack {
+				s = "#"
+			}
+			s += fmt.Sprintf(`%d_%s_%s`, _item.ID, _item.Properties.Language, _item.Properties.TrackName)
 			if _item.Codec == "SubStationAlpha" {
 				s += ".ass"
 			} else {
@@ -178,13 +184,16 @@ func (self *mkvProcessor) CreateMKV(file string, tracks, attachments []string, o
 			_sl = _arr[1]
 		}
 		if len(_arr) > 2 {
-			_st = _arr[2]
+			_st = strings.Join(_arr[2:], "_")
 		}
 		if _sl != "" {
 			args = append(args, "--language", "0:"+_sl)
 		}
 		if _st != "" {
 			args = append(args, "--track-name", "0:"+_st)
+		}
+		if !strings.HasPrefix(f, "#") {
+			args = append(args, "--default-track-flag", "0:no")
 		}
 		args = append(args, _item)
 	}
@@ -247,11 +256,13 @@ func (self *mkvProcessor) CreateMKVs(vDir, sDir, fDir, tDir, oDir, slang, stitle
 	for _, item := range files {
 		ec := 0
 		_, _, _, _f := splitPath(item)
-		tmp, _ := findPath(sDir, fmt.Sprintf(`%s(_[\S ]*)?\.\S+$`, regexp.QuoteMeta(_f)))
+		tmp, _ := findPath(sDir, `\.\S+$`)
 		asses := make([]string, 0)
 		subs := make([]string, 0)
 		p := path.Join(tDir, _f)
 		fn := path.Join(oDir, _f)
+		s1 := path.Join(p, "asses")
+		s2 := path.Join(p, "subs")
 		if self.mks {
 			fn += ".mks"
 		} else {
@@ -263,15 +274,27 @@ func (self *mkvProcessor) CreateMKVs(vDir, sDir, fDir, tDir, oDir, slang, stitle
 			printLog(lcb, logProgress, "Create (%d/%d) done.", _ok, l)
 			continue
 		}
-		for _, sub := range tmp {
-			if strings.HasSuffix(sub, ".ass") {
-				_, _, _, __f := splitPath(sub)
-				_s := path.Join(p, __f) + ".ass"
-				_ = copyFileOrDir(sub, _s)
+		for i, sub := range tmp {
+			_, n, e, _ := splitPath(sub)
+			reg, _ := regexp.Compile(fmt.Sprintf(`^#?(%s)(_[^_]*)*\.\S+$`, regexp.QuoteMeta(_f)))
+			if !reg.MatchString(n) {
+				continue
+			}
+			f := strings.Replace(n, _f, "", 1)
+			g := ""
+			if strings.HasPrefix(f, "#") {
+				f = strings.TrimPrefix(f, "#")
+				g = "#"
+			}
+			_s := fmt.Sprintf("%s%d%s", g, i, f)
+			if e == ".ass" {
+				_s = path.Join(s1, _s)
 				asses = append(asses, _s)
 			} else {
-				subs = append(subs, sub)
+				_s = path.Join(s2, _s)
+				subs = append(subs, _s)
 			}
+			_ = copyFileOrDir(sub, _s)
 		}
 		attachments := make([]string, 0)
 		tracks := make([]string, 0)
@@ -279,8 +302,8 @@ func (self *mkvProcessor) CreateMKVs(vDir, sDir, fDir, tDir, oDir, slang, stitle
 			if !self.ASSFontSubset(asses, fDir, "", false, lcb) {
 				ec++
 			} else {
-				_tracks, _ := findPath(p, `\.pgs$`)
-				__p := path.Join(p, "subsetted")
+				_tracks, _ := findPath(s1, `\.pgs$`)
+				__p := path.Join(s1, "subsetted")
 				attachments = findFonts(__p)
 				tracks, _ = findPath(__p, `\.ass$`)
 				tracks = append(tracks, _tracks...)
@@ -302,9 +325,19 @@ func (self *mkvProcessor) CreateMKVs(vDir, sDir, fDir, tDir, oDir, slang, stitle
 	return ok
 }
 
-func (self *mkvProcessor) MakeMKVs(dir, data, output, slang, stitle string, lcb logCallback) bool {
+func (self *mkvProcessor) MakeMKVs(dir, data, output, slang, stitle string, subset bool, lcb logCallback) bool {
+	dir, _ = filepath.Abs(dir)
+	data, _ = filepath.Abs(data)
+	output, _ = filepath.Abs(output)
 	ok := true
-	files, _ := findPath(dir, `\.\S+$`)
+	_files, _ := findPath(dir, `\.\S+$`)
+	files := make([]string, 0)
+	for _, item := range _files {
+		if strings.HasPrefix(item, data) || strings.HasPrefix(item, output) {
+			continue
+		}
+		files = append(files, item)
+	}
 	l := len(files)
 	_ok := 0
 	for _, item := range files {
@@ -324,9 +357,21 @@ func (self *mkvProcessor) MakeMKVs(dir, data, output, slang, stitle string, lcb 
 		}
 		p = path.Join(data, d, f)
 		_p := path.Join(p, "subsetted")
-		subs, _ := findPath(p, `\.(sub)|(pgs)`)
 		asses, _ := findPath(_p, `\.ass$`)
 		attachments := findFonts(_p)
+		if len(asses) == 0 && subset {
+			asses, _ = findPath(p, `\.ass$`)
+			if len(asses) > 0 {
+				if !self.ASSFontSubset(asses, "", "", false, lcb) {
+					ok = false
+					printLog(lcb, logError, `Failed to make the file: "%s".`, item)
+					continue
+				}
+				asses, _ = findPath(_p, `\.ass$`)
+				attachments = findFonts(_p)
+			}
+		}
+		subs, _ := findPath(p, `\.(sub)|(pgs)`)
 		tracks := append(subs, asses...)
 		if !self.CreateMKV(item, tracks, attachments, fn, slang, stitle, true) {
 			ok = false
